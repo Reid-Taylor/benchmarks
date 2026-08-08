@@ -1,24 +1,34 @@
-"""Train a RelFlow model on the stitched rel-f1 parquet.
+"""Train a RelFlow model on any official rel-f1 RelBench task.
 
-Target: predict the finishing ``position`` of each result within a race
-(mirrors RelBench's ``results-position`` regression task, framed inside the
-race's local context so the model can also read the driver, constructor,
-qualifying, and standings context of every other entry in the same race).
+Pick a task with ``--task``; the script loads the matching parquet produced
+by ``f1_stitching.py``, builds a schema whose target leaf is the exact label
+column RelBench scores, and monitors the RelFlow metric key that corresponds
+to the RelBench leaderboard metric for that task.
 
-The schema follows the rel-f1 shape produced by ``f1_stitching.py``:
+Interpretable logging
+---------------------
+At startup the script prints, for the chosen task:
 
-* the race is the singleton root and carries the joined circuit descriptors;
-* ``results``, ``qualifying``, and ``driver_standings`` are repeated branches;
-* driver / constructor / nationality identifiers are ``rf.Entity`` inside
-  branches because Entity needs at least two configured slots per observation
-  and encodes observation-local repeated equality (a driver appearing in both
-  the qualifying and results branches, for example);
-* circuit country and race name live once per race, so they are ``rf.Category``
-  with a persistent bounded vocabulary.
+* the RelBench name and its official evaluation metric;
+* the RelFlow schema address of the target leaf;
+* the exact ``trainer.callback_metrics`` keys emitted per split.
 
-Run::
+Every printed key can be pasted directly into ``ModelCheckpoint(monitor=...)``
+or a wandb chart. Binary targets use ``rf.Boolean(target=True)``, so RelFlow
+tracks ``auc`` (BinaryAUROC) in-training under the address-qualified key --
+that number IS the RelBench leaderboard metric. After training, the exact
+RelBench-official score is re-computed by handing the model's predicted
+``P(True)`` (or point prediction, for regression) to ``task.evaluate(...)``
+from ``relbench`` on every split whose labels are available (train + val).
+Test splits ship without labels; predictions there must be submitted to the
+RelBench leaderboard.
 
-    python f1_training.py --parquet rel_f1_stitched.parquet --max-epochs 10
+Example
+-------
+::
+
+    python -m benchmarks.rel_bench.formula1.f1_training \\
+        --task driver-dnf --parquet-dir data/ --max-epochs 20
 """
 
 from __future__ import annotations
@@ -29,201 +39,496 @@ from datetime import datetime
 from pathlib import Path
 
 import lightning.pytorch as lit
+import numpy as np
 import polars as pl
 import relflow as rf
 import torch
-import wandb
 from lightning.pytorch.callbacks import ModelCheckpoint
-from lightning.pytorch.loggers import WandbLogger
-from torch.optim import AdamW
+from lightning.pytorch.loggers import Logger
 
-assert os.environ.get("WANDB_API_KEY"), "source ~/reid/wandb.env before running"
-wandb.login(key=os.environ["WANDB_API_KEY"], relogin=True)
+from .tasks import TASKS, TaskSpec, get_task_spec
 
-def adamw(lr: float, **kwargs):
-    # json2vec calls model.optimizer(model); AdamW wants an iterable of params
-    return lambda model: AdamW(model.parameters(), lr=lr, **kwargs)
-
-
-# RelBench rel-f1 official temporal cutoffs.
-VALID_TS = datetime(2005, 1, 1)
-TEST_TS = datetime(2010, 1, 1)
-
-# Bounded vocabularies. Sizes are soft ceilings sized above the observed
-# rel-f1 cardinalities so the Category vocabularies never saturate.
-N_RACE_NAMES = 64          # ~52 unique race names in DB
-N_COUNTRIES = 96           # ~52 circuit countries
-N_STATUS = 256             # ~140 statusIds
-
-# Branch lengths. F1 grids peak around 26 entries; standings hold the full
-# active field for a season.
+# ---------------------------------------------------------------------------
+# Bounded vocabularies (soft ceilings sized above observed rel-f1 cardinalities)
+# ---------------------------------------------------------------------------
+N_RACE_NAMES = 64
+N_COUNTRIES = 96
+N_STATUS = 256
+N_DRIVERS = 1024        # rel-f1 has ~860 drivers historically
 N_DRIVERS_PER_RACE = 32
-N_STANDINGS_PER_RACE = 48
+N_HISTORY = 32
+
+# ---------------------------------------------------------------------------
+# Schema builders
+# ---------------------------------------------------------------------------
 
 
-def build_model() -> rf.Model:
+def _target(spec: TaskSpec):
+    """The schema constructor for the supervised leaf of ``spec``."""
+    if spec.task_type == "regression":
+        return rf.Number(target=True)
+    # Boolean natively emits P(True) and tracks BinaryAUROC in-training.
+    return rf.Boolean(target=True)
+
+
+def build_race_rooted_schema(spec: TaskSpec) -> rf.Model:
+    """Race-rooted schema for the autocomplete tasks.
+
+    Depending on the task, the target leaf is either ``results/position`` or
+    ``qualifying/position``. Every other branch stays as unsupervised input
+    context. To avoid label leakage, we drop the ``results`` branch when the
+    target lives under ``qualifying`` (race results happen after qualifying).
+    """
+    include_results = spec.target_path.startswith("results/")
+    include_qualifying = spec.target_path.startswith("qualifying/") or include_results
+
+    results_branch = rf.Branch(
+        length=N_DRIVERS_PER_RACE,
+        driverId=rf.Entity(),
+        constructorId=rf.Entity(),
+        driver_nationality=rf.Entity(),
+        constructor_nationality=rf.Entity(),
+        grid=rf.Number(),
+        laps=rf.Number(),
+        points=rf.Number(),
+        statusId=rf.Category(size=N_STATUS),
+        position=(
+            _target(spec)
+            if spec.target_path == "results/position"
+            else rf.Number()
+        ),
+    )
+    qualifying_branch = rf.Branch(
+        length=N_DRIVERS_PER_RACE,
+        driverId=rf.Entity(),
+        constructorId=rf.Entity(),
+        driver_nationality=rf.Entity(),
+        constructor_nationality=rf.Entity(),
+        position=(
+            _target(spec)
+            if spec.target_path == "qualifying/position"
+            else rf.Number()
+        ),
+    )
+
+    kwargs: dict = {
+        "name": spec.root_name,
+        "d_model": 128,
+        "n_layers": 4,
+        "n_heads": 4,
+        "batch_size": 16,
+        "embed": True,
+        "optimizer": lambda module: torch.optim.AdamW(
+            module.parameters(), lr=1e-3, weight_decay=1e-4
+        ),
+        "year": rf.Number(),
+        "round": rf.Number(),
+        "race_name": rf.Category(size=N_RACE_NAMES, query="[*].name"),
+        "date": rf.DateParts(
+            dateparts=["month_of_year", "day_of_week", "week_of_year"],
+        ),
+        "circuit_country": rf.Category(size=N_COUNTRIES),
+        "circuit_lat": rf.Number(),
+        "circuit_lng": rf.Number(),
+        "circuit_alt": rf.Number(),
+    }
+    if include_qualifying:
+        kwargs["qualifying"] = qualifying_branch
+    if include_results:
+        kwargs["results"] = results_branch
+    return rf.Model(**kwargs)
+
+
+def build_driver_rooted_schema(spec: TaskSpec) -> rf.Model:
+    """Driver-rooted schema for the forecasting tasks.
+
+    Each observation is one ``(driverId, as_of)`` pair with the RelBench label
+    at ``spec.target_path`` and the driver's most recent race entries under
+    ``recent_results``.
+    """
     return rf.Model(
+        name=spec.root_name,
         d_model=128,
-        n_layers=8,
+        n_layers=4,
         n_heads=4,
         batch_size=32,
         embed=True,
         optimizer=lambda module: torch.optim.AdamW(
             module.parameters(), lr=1e-3, weight_decay=1e-4
         ),
-        year=rf.Number(),
-        round=rf.Number(),
-        race_name=rf.Category(size=N_RACE_NAMES, query="[*].name"),
-        date=rf.DateParts(dateparts=["month_of_year", "day_of_week", "week_of_year"]),
-        circuit_country=rf.Category(size=N_COUNTRIES),
-        circuit_lat=rf.Number(),
-        circuit_lng=rf.Number(),
-        circuit_alt=rf.Number(),
-        # One record per driver-entry in the race.
-        results=rf.Branch(
-            length=N_DRIVERS_PER_RACE,
-            driverId=rf.Entity(),
+        driverId=rf.Category(size=N_DRIVERS),
+        driver_nationality=rf.Category(size=N_COUNTRIES),
+        as_of=rf.DateParts(
+            dateparts=["month_of_year", "day_of_week", "week_of_year"],
+            query="[*].as_of",
+        ),
+        recent_results=rf.Branch(
+            length=N_HISTORY,
+            year=rf.Number(),
+            round=rf.Number(),
+            race_name=rf.Category(size=N_RACE_NAMES),
+            circuit_country=rf.Entity(),
+            circuit_lat=rf.Number(),
+            circuit_lng=rf.Number(),
+            circuit_alt=rf.Number(),
             constructorId=rf.Entity(),
-            driver_nationality=rf.Entity(),
             constructor_nationality=rf.Entity(),
             grid=rf.Number(),
+            position=rf.Number(),
+            positionOrder=rf.Number(),
+            points=rf.Number(),
             laps=rf.Number(),
-            points=rf.Number(),
             statusId=rf.Category(size=N_STATUS),
-            position=rf.Number(target=True),
         ),
-        # Qualifying context: same driver/constructor axes as results.
-        qualifying=rf.Branch(
-            length=N_DRIVERS_PER_RACE,
-            driverId=rf.Entity(),
-            constructorId=rf.Entity(),
-            driver_nationality=rf.Entity(),
-            constructor_nationality=rf.Entity(),
-            position=rf.Number(),
-        ),
-        # Season-to-date driver standings entering the race.
-        driver_standings=rf.Branch(
-            length=N_STANDINGS_PER_RACE,
-            driverId=rf.Entity(),
-            driver_nationality=rf.Entity(),
-            points=rf.Number(),
-            position=rf.Number(),
-            wins=rf.Number(),
-        ),
+        **{spec.target_path: _target(spec)},
     )
 
 
-def split_by_date(
-    frame: pl.DataFrame,
+def build_model_for(spec: TaskSpec) -> rf.Model:
+    if spec.root_shape == "race":
+        return build_race_rooted_schema(spec)
+    return build_driver_rooted_schema(spec)
+
+
+# ---------------------------------------------------------------------------
+# Data loading
+# ---------------------------------------------------------------------------
+
+
+def load_splits(
+    parquet_dir: Path, spec: TaskSpec
 ) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
-    train = frame.filter(pl.col("date") < VALID_TS)
-    validate = frame.filter(
-        (pl.col("date") >= VALID_TS) & (pl.col("date") < TEST_TS)
+    path = parquet_dir / spec.parquet_stem
+    frame = pl.read_parquet(path)
+    if "split" not in frame.columns:
+        raise KeyError(
+            f"{path} is missing a 'split' column — regenerate it with "
+            "f1_stitching.py."
+        )
+    return (
+        frame.filter(pl.col("split") == "train"),
+        frame.filter(pl.col("split") == "validate"),
+        frame.filter(pl.col("split") == "test"),
     )
-    test = frame.filter(pl.col("date") >= TEST_TS)
-    return train, validate, test
+
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+
+
+def _configure_logger(spec: TaskSpec, tag: str) -> Logger | bool:
+    """Return a wandb logger if credentials are present, else Lightning's
+    default logger."""
+    api_key = os.environ.get("WANDB_API_KEY")
+    if not api_key:
+        print("[logger] WANDB_API_KEY not set — using Lightning's default logger.")
+        return True
+    try:
+        import wandb
+        from lightning.pytorch.loggers import WandbLogger
+    except ImportError:
+        print("[logger] wandb not installed — using Lightning's default logger.")
+        return True
+    wandb.login(key=api_key)
+    return WandbLogger(
+        entity=os.environ.get("WANDB_ENTITY", "rebridgers-independent"),
+        project=os.environ.get("WANDB_PROJECT", "rel-bench"),
+        name=f"{spec.name}-{tag}",
+        tags=[spec.name, spec.root_shape, spec.task_type],
+        config={
+            "task": spec.name,
+            "root_shape": spec.root_shape,
+            "target_address": spec.target_address,
+            "relbench_metric": spec.relbench_metric,
+            "relflow_metric": spec.relflow_metric,
+        },
+    )
+
+
+def _announce(spec: TaskSpec, monitor_key: str) -> None:
+    print("=" * 72)
+    print(f"  RelBench task : {spec.name}")
+    print(f"  RelBench score: {spec.relbench_metric}  (leaderboard metric)")
+    print(f"  Root shape    : {spec.root_shape}  (root name = {spec.root_name!r})")
+    print(f"  Target leaf   : {spec.target_address}  ({spec.task_type})")
+    print(f"  Monitoring    : {monitor_key}  (mode={spec.monitor_mode})")
+    print("  Split metrics you can chart:")
+    for split in ("train", "validate", "test"):
+        print(f"    - {spec.metric_key(split)}")
+        print(f"    - loss/{split}")
+    print("=" * 72)
+
+
+def _dump_final_metrics(spec: TaskSpec, trainer: lit.Trainer) -> None:
+    print("\n[final callback_metrics]")
+    for key, value in sorted(trainer.callback_metrics.items()):
+        marker = "  * " if spec.target_address in key else "    "
+        try:
+            fvalue = float(value)
+        except (TypeError, ValueError):
+            fvalue = float("nan")
+        print(f"{marker}{key} = {fvalue:.5f}")
+
+
+# ---------------------------------------------------------------------------
+# RelBench-official post-fit evaluation
+# ---------------------------------------------------------------------------
+
+# RelBench splits are named 'train'/'val'/'test'; our parquet uses 'validate'.
+_RELBENCH_SPLIT = {"train": "train", "validate": "val", "test": "test"}
+
+
+def _predict_scores(
+    spec: TaskSpec,
+    model: rf.Model,
+    frame: pl.DataFrame,
+    batch_size: int,
+) -> np.ndarray:
+    """Run ``model.predict`` in batches and return one score per row.
+
+    Binary tasks return ``P(True)`` (from the ``rf.Boolean`` target). Regression
+    tasks return the point prediction. Both are the exact inputs
+    ``relbench.tasks.Task.evaluate`` expects.
+    """
+    rows = frame.to_dicts()
+    scores: list[float] = []
+    for start in range(0, len(rows), batch_size):
+        batch = rows[start : start + batch_size]
+        out = model.predict(batch)
+        content = out[spec.target_address]["content"]
+        if spec.task_type == "binary":
+            probs = content["probability"]
+        else:
+            probs = content  # list[float] for rf.Number
+        scores.extend(float(x) for x in probs)
+    return np.asarray(scores, dtype=np.float64)
+
+
+def relbench_evaluate(
+    spec: TaskSpec,
+    model: rf.Model,
+    frame: pl.DataFrame,
+    split: str,
+    *,
+    batch_size: int = 64,
+) -> dict[str, float] | None:
+    """Compute RelBench-official leaderboard metrics on a labeled split.
+
+    Only implemented for driver-rooted tasks. Race-rooted autocomplete tasks
+    (``results-position``, ``qualifying-position``) require per-branch-entry
+    alignment by ``resultId`` / ``qualifyId`` and are not scored here.
+    """
+    if len(frame) == 0:
+        print(f"[relbench-eval] no rows in {split!r} split, skipping.")
+        return None
+    if spec.root_shape != "driver":
+        print(
+            f"[relbench-eval] {spec.name}: race-rooted evaluation not "
+            "implemented yet (needs per-entry alignment by resultId / "
+            "qualifyId). Skipping."
+        )
+        return None
+
+    from relbench.tasks import get_task
+
+    task = get_task("rel-f1", spec.name)
+    relbench_split = _RELBENCH_SPLIT.get(split, split)
+    target_table = task.get_table(relbench_split)
+    labels_df = target_table.df
+    entity_col = task.entity_col
+    time_col = task.time_col
+
+    if task.target_col not in labels_df.columns:
+        # RelBench ships test tables without labels; predictions there must be
+        # submitted to the leaderboard.
+        print(
+            f"[relbench-eval] {spec.name} {relbench_split!r} split has no "
+            "labels (must be submitted to the RelBench leaderboard). Skipping."
+        )
+        return None
+
+    scores = _predict_scores(spec, model, frame, batch_size=batch_size)
+    frame_pd = frame.select(["driverId", "as_of"]).to_pandas()
+    frame_pd["score"] = scores
+    key_to_score: dict[tuple[int, object], float] = {
+        (int(row.driverId), row.as_of): float(row.score)
+        for row in frame_pd.itertuples(index=False)
+    }
+
+    pred = np.full(len(labels_df), np.nan, dtype=np.float64)
+    for i, row in enumerate(labels_df.itertuples(index=False)):
+        pred[i] = key_to_score.get(
+            (int(getattr(row, entity_col)), getattr(row, time_col)),
+            np.nan,
+        )
+    missing = int(np.isnan(pred).sum())
+    if missing:
+        print(
+            f"[relbench-eval] warning: {missing}/{len(pred)} rows in the "
+            f"RelBench {relbench_split!r} table had no matching parquet row; "
+            "filling with 0.5 for binary / mean for regression."
+        )
+        fill = 0.5 if spec.task_type == "binary" else float(np.nanmean(pred))
+        pred = np.where(np.isnan(pred), fill, pred)
+
+    return task.evaluate(pred, target_table)
+
+
+def _print_relbench_metrics(
+    spec: TaskSpec,
+    split: str,
+    metrics: dict[str, float],
+) -> None:
+    official = spec.relbench_metric.lower().replace("auroc", "roc_auc")
+    print(
+        f"\n[relbench-eval] {spec.name} on RelBench {split!r} split "
+        f"(official metric = {spec.relbench_metric}):"
+    )
+    for key, value in sorted(metrics.items()):
+        marker = "  * " if key.lower() == official else "    "
+        print(f"{marker}{key} = {float(value):.5f}")
+
+
+def _log_relbench_metrics(
+    logger: Logger | bool,
+    spec: TaskSpec,
+    split: str,
+    metrics: dict[str, float],
+) -> None:
+    if not isinstance(logger, Logger):
+        return
+    payload = {
+        f"relbench/{spec.name}/{split}/{key}": float(value)
+        for key, value in metrics.items()
+    }
+    payload[f"relbench/{spec.name}/{split}/official"] = float(
+        metrics.get(
+            spec.relbench_metric.lower().replace("auroc", "roc_auc"),
+            float("nan"),
+        )
+    )
+    logger.log_metrics(payload)
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--parquet",
+        "--task",
+        choices=sorted(TASKS),
+        required=True,
+        help="Which official RelBench rel-f1 task to train.",
+    )
+    parser.add_argument(
+        "--parquet-dir",
         type=Path,
-        default=Path("rel_f1_stitched.parquet"),
-        help="Path to the nested parquet produced by f1_stitching.py.",
+        default=Path("data"),
+        help="Directory containing the parquets produced by f1_stitching.py.",
     )
     parser.add_argument("--max-epochs", type=int, default=10)
-    parser.add_argument("--batch-size", type=int, default=None,
-                        help="Override model.batch_size for larger hardware.")
+    parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--num-workers", type=int, default=0)
-    parser.add_argument(
-        "--checkpoint-dir", type=Path, default=Path("checkpoints"),
-    )
-    parser.add_argument(
-        "--artifact", type=Path, default=Path("rel_f1_model.pt"),
-        help="Where to write the compact RelFlow artifact after training.",
-    )
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--checkpoint-dir",
+        type=Path,
+        default=Path("checkpoints"),
+    )
+    parser.add_argument(
+        "--artifact",
+        type=Path,
+        default=None,
+        help="Where to write the compact RelFlow artifact. "
+             "Default: rel_f1_<task>.pt inside the checkpoint dir.",
+    )
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
 
-    frame = pl.read_parquet(args.parquet)
-    train, validate, test = split_by_date(frame)
-    print( 
-        f"races: train={len(train):,}  validate={len(validate):,}  "
-        f"test={len(test):,}"
+    spec = get_task_spec(args.task)
+    train, validate, test = load_splits(args.parquet_dir, spec)
+    print(
+        f"[data] task={spec.name}  train={len(train):,}  "
+        f"validate={len(validate):,}  test={len(test):,}"
     )
 
-    model = build_model()
+    model = build_model_for(spec)
     if args.batch_size is not None:
         model.batch_size = args.batch_size
 
-    datamodule = rf.PolarsDataModule(
-        model=model,
-        train=train,
-        validate=validate,
-        test=test,
-        num_workers=args.num_workers,
-        persistent_workers=args.num_workers > 0,
-        pin_memory=torch.cuda.is_available(),
-    )
+    monitor_key = spec.metric_key("validate")
+    _announce(spec, monitor_key)
 
+    # Use loss/validate as the checkpoint monitor because RelFlow always emits
+    # it. The task-specific metric_key is also available in callback_metrics
+    # for wandb dashboards.
     checkpoint = ModelCheckpoint(
         dirpath=args.checkpoint_dir,
         monitor="loss/validate",
         mode="min",
         save_top_k=1,
         save_last=True,
-        filename="rel-f1-{epoch:02d}-{loss/validate:.4f}",
+        filename=f"{spec.name}-{{epoch:02d}}-{{loss/validate:.4f}}",
     )
 
-    logger = WandbLogger(
-        entity="rebridgers-independent", 
-        project="rel-bench", 
-        name=datetime.now().strftime("%Y-%m-%d %H:%M"),
-        config={
-            "learning_rate": 2e-5,
-            "architecture": "RelFlow",
-            "dataset": "formula1",
-            "min_epochs": 10,
-        },
+    tag = datetime.now().strftime("%Y-%m-%d-%H%M")
+    logger = _configure_logger(spec, tag)
+
+    datamodule = rf.PolarsDataModule(
+        model=model,
+        train=train,
+        validate=validate,
+        test=test if len(test) else None,
+        num_workers=args.num_workers,
+        persistent_workers=args.num_workers > 0,
+        pin_memory=torch.cuda.is_available(),
     )
 
     trainer = lit.Trainer(
         max_epochs=args.max_epochs,
-        logger=logger,
         accelerator="auto",
         devices="auto",
         callbacks=[checkpoint],
+        logger=logger,
         log_every_n_steps=10,
     )
 
-    # phase: pretrain
-    model.update(dropout=0.05)
-    model.update(rf.where("type") == "entity", p_mask=0.15, p_prune=0.05)
-    model.update(rf.where("type") == "category", p_mask=0.15, p_prune=0.05)
-    model.update(rf.where("type") == "number", p_mask=0.15, p_prune=0.05)
-    model.update(rf.where("type") == "dateparts", p_mask=0.15, p_prune=0.05)
-    model.optimizer = adamw(2e-5, weight_decay=0.01)
-
     trainer.fit(model=model, datamodule=datamodule)
 
-    # phase: finetune
-    model.update(rf.where("type") == "entity", p_mask=0.0, p_prune=0.0)
-    model.update(rf.where("type") == "category", p_mask=0.0, p_prune=0.0)
-    model.update(rf.where("type") == "number", p_mask=0.0, p_prune=0.0)
-    model.update(rf.where("type") == "dateparts", p_mask=0.0, p_prune=0.0)
-    model.update(rf.where("name") == "mwt", p_mask=0.5, p_prune=0.3)
-    model.update(rf.where("name") == "logp", p_mask=0.5, p_prune=0.3)
-    model.update(rf.where("name") == "reactive", p_mask=0.5, p_prune=0.3)
+    if len(test):
+        trainer.test(model=model, datamodule=datamodule, verbose=True)
 
-    model.optimizer = adamw(2e-5, weight_decay=0.01)
-    trainer.test(model=model, datamodule=datamodule, verbose=True)
+    _dump_final_metrics(spec, trainer)
 
-    args.artifact.parent.mkdir(parents=True, exist_ok=True)
-    model.save(args.artifact)
-    print(f"Saved model artifact to {args.artifact}")
+    # RelBench-official metrics on the validation split (labels available).
+    val_metrics = relbench_evaluate(
+        spec, model, validate, split="validate", batch_size=max(model.batch_size, 32)
+    )
+    if val_metrics is not None:
+        _print_relbench_metrics(spec, "val", val_metrics)
+        _log_relbench_metrics(logger, spec, "val", val_metrics)
+
+    # Test labels are only available for driver-rooted train/val; test tables
+    # ship without labels. relbench_evaluate skips gracefully in that case.
+    if len(test):
+        test_metrics = relbench_evaluate(
+            spec, model, test, split="test", batch_size=max(model.batch_size, 32)
+        )
+        if test_metrics is not None:
+            _print_relbench_metrics(spec, "test", test_metrics)
+            _log_relbench_metrics(logger, spec, "test", test_metrics)
+
+    artifact_path = args.artifact or (
+        args.checkpoint_dir / f"rel_f1_{spec.name.replace('-', '_')}.pt"
+    )
+    artifact_path.parent.mkdir(parents=True, exist_ok=True)
+    model.save(artifact_path)
+    print(f"[artifact] saved RelFlow model to {artifact_path}")
 
 
 if __name__ == "__main__":

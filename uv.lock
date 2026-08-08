@@ -231,7 +231,7 @@ requires-dist = [
     { name = "pdbfixer", specifier = ">=1.12.0" },
     { name = "polars", specifier = ">=1.43.2" },
     { name = "relbench", specifier = ">=2.1.2" },
-    { name = "relflow", specifier = ">=0.0.1" },
+    { name = "relflow", git = "https://github.com/relflow/relflow.git" },
     { name = "requests", specifier = ">=2.34.2" },
     { name = "torch", specifier = ">=2.13.0" },
     { name = "wandb", specifier = ">=0.28.1" },
@@ -2298,8 +2298,8 @@ wheels = [
 
 [[package]]
 name = "relflow"
-version = "0.0.1"
-source = { registry = "https://pypi.org/simple" }
+version = "0.1.1"
+source = { git = "https://github.com/relflow/relflow.git#2e8379ca4e66ec2b0163097b7a7d76e1e05e0fa2" }
 dependencies = [
     { name = "anytree" },
     { name = "beartype" },
@@ -2315,10 +2315,6 @@ dependencies = [
     { name = "tensordict" },
     { name = "torch" },
     { name = "torchmetrics" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/84/0a/6647cee5061ad64c52d48a5895bcfddffa1d3c322f4c3da9ccf0c630e987/relflow-0.0.1.tar.gz", hash = "sha256:6e7931a5cd13e3ac1966c94c939ca613215f34a9c80fc1e05641e1cee3ac1e02", size = 114595, upload-time = "2026-08-03T02:05:06.732Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/b3/a4/d4482187e75f94b3f394e4cbdde8daaebe4151dd094e67dd951f060a6022/relflow-0.0.1-py3-none-any.whl", hash = "sha256:28c0c3f26052c82d187e00adefda1ba3a37fcbd1eb9798d572885a4733a392d0", size = 141255, upload-time = "2026-08-03T02:05:05.152Z" },
 ]
 
 [[package]]
