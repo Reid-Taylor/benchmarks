@@ -16,7 +16,7 @@ dependencies = [
     "pdbfixer>=1.12.0",
     "polars>=1.43.2",
     "relbench>=2.1.2",
-    "relflow>=0.0.1",
+    "relflow @ git+https://github.com/relflow/relflow.git",
     "requests>=2.34.2",
     "torch>=2.13.0",
     "wandb>=0.28.1",
