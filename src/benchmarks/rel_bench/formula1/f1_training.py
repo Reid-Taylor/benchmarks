@@ -180,13 +180,13 @@ def main() -> None:
 
     logger = WandbLogger(
         entity="rebridgers-independent", 
-        project="rel-bench/formula1", 
+        project="rel-bench", 
         name=datetime.now().strftime("%Y-%m-%d %H:%M"),
         config={
             "learning_rate": 2e-5,
-            "architecture": "Json2Vec",
-            "dataset": "Zinc15",
-            "min_epochs": 150,
+            "architecture": "RelFlow",
+            "dataset": "formula1",
+            "min_epochs": 10,
         },
     )
 
