@@ -205,6 +205,9 @@ def load_splits(
             f"{path} is missing a 'split' column — regenerate it with "
             "f1_stitching.py."
         )
+    if spec.task_type == "binary" and spec.target_path in frame.columns:
+        # rf.Boolean rejects int labels; cast 0/1 -> False/True at the root.
+        frame = frame.with_columns(pl.col(spec.target_path).cast(pl.Boolean))
     return (
         frame.filter(pl.col("split") == "train"),
         frame.filter(pl.col("split") == "validate"),
