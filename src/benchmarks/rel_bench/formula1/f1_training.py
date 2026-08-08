@@ -178,14 +178,6 @@ def main() -> None:
         filename="rel-f1-{epoch:02d}-{loss/validate:.4f}",
     )
 
-    trainer = lit.Trainer(
-        max_epochs=args.max_epochs,
-        accelerator="auto",
-        devices="auto",
-        callbacks=[checkpoint],
-        log_every_n_steps=10,
-    )
-
     logger = WandbLogger(
         entity="rebridgers-independent", 
         project="rel-bench/formula1", 
@@ -198,6 +190,14 @@ def main() -> None:
         },
     )
 
+    trainer = lit.Trainer(
+        max_epochs=args.max_epochs,
+        logger=logger,
+        accelerator="auto",
+        devices="auto",
+        callbacks=[checkpoint],
+        log_every_n_steps=10,
+    )
 
     # phase: pretrain
     model.update(dropout=0.05)
@@ -207,7 +207,7 @@ def main() -> None:
     model.update(rf.where("type") == "dateparts", p_mask=0.15, p_prune=0.05)
     model.optimizer = adamw(2e-5, weight_decay=0.01)
 
-    trainer(logger).fit(model=model, datamodule=datamodule)
+    trainer.fit(model=model, datamodule=datamodule)
 
     # phase: finetune
     model.update(rf.where("type") == "entity", p_mask=0.0, p_prune=0.0)
@@ -219,7 +219,7 @@ def main() -> None:
     model.update(rf.where("name") == "reactive", p_mask=0.5, p_prune=0.3)
 
     model.optimizer = adamw(2e-5, weight_decay=0.01)
-    trainer(logger).test(model=model, datamodule=datamodule, verbose=True)
+    trainer.test(model=model, datamodule=datamodule, verbose=True)
 
     args.artifact.parent.mkdir(parents=True, exist_ok=True)
     model.save(args.artifact)
