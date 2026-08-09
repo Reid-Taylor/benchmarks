@@ -3,8 +3,9 @@ import pandas as pd
 
 NUM_SAMPLES = 100_000
 NUM_CLUSTERS = 4
+EPSILON = 1e-2
 
-id = np.arange(NUM_SAMPLES)
+id = np.tile(np.arange(10_000), NUM_SAMPLES // 10_000)
 
 relation_y_1 = lambda x: np.sin(x)
 relation_y_2 = lambda x: np.log2(x)
@@ -26,6 +27,11 @@ z = np.where(id % NUM_CLUSTERS == 0, relation_z_1(x),
              np.where(id % NUM_CLUSTERS == 1, relation_z_2(x),
                       np.where(id % NUM_CLUSTERS == 2, relation_z_3(x),
                                relation_z_4(x)))) 
+
+
+x = x + np.random.normal(0, EPSILON, NUM_SAMPLES)
+y = y + np.random.normal(0, EPSILON, NUM_SAMPLES)
+z = z + np.random.normal(0, EPSILON, NUM_SAMPLES)
 
 df = pd.DataFrame(
     {
