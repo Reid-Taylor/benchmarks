@@ -1,9 +1,7 @@
-import relflow as rf
 import numpy as np
-import torch
 import pandas as pd
 
-NUM_SAMPLES = 1_000_000
+NUM_SAMPLES = 100_000
 NUM_CLUSTERS = 4
 
 id = np.arange(NUM_SAMPLES)
@@ -37,9 +35,6 @@ df = pd.DataFrame(
         "z": z
     }
 )
-
-import os 
-print(os.getcwd())
 
 df.iloc[:int(NUM_SAMPLES*0.8),:].to_parquet("./src/benchmarks/synthetic/cluster_test/data/clusters_train.parquet")
 df.iloc[int(NUM_SAMPLES*0.8):int(NUM_SAMPLES*0.9),:].to_parquet("./src/benchmarks/synthetic/cluster_test/data/clusters_val.parquet")

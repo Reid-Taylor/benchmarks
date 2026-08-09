@@ -21,16 +21,15 @@ def adamw(lr: float, **kwargs):
     return lambda model: AdamW(model.parameters(), lr=lr, **kwargs)
 
 model = rf.Model.from_tree(
-    d_model=8,
-    n_layers=2,
-    n_heads=2,
-    batch_size=1024,
-    embed=True,
+    d_model=64,
+    n_layers=4,
+    n_heads=4,
+    batch_size=512,
 
     x_field = rf.Number(),
     y_field = rf.Number(),
     z_field = rf.Number(),
-    id = rf.Cluster(capacity = 1_000_000, n_clusters=(2,8))
+    id = rf.Cluster(capacity = 150_000, n_clusters=(2,8))
 )
 
 
@@ -55,6 +54,7 @@ def trainer(logger):
             EarlyStopping(monitor="loss/validate", mode="min", patience=10),
         ],
         min_epochs=150,
+        precision="bf16",
         logger=logger,
         limit_train_batches=35_000,
         limit_val_batches=50_000,
@@ -76,18 +76,13 @@ logger = WandbLogger(
 # phase: pretrain
 model.update(dropout=0.05)
 model.update(rf.where("type") == "cluster", p_mask=0.15, p_prune=0.05)
-model.update(rf.where("type") == "category", p_mask=0.15, p_prune=0.05)
 model.update(rf.where("type") == "number", p_mask=0.15, p_prune=0.05)
-model.update(rf.where("type") == "boolean", p_mask=0.15, p_prune=0.05)
 model.optimizer = adamw(2e-5, weight_decay=0.01)
 
 trainer(logger).fit(model=model, datamodule=datamodule)
 
 # phase: finetune
-model.update(rf.where("type") == "cluster", p_mask=0.0, p_prune=0.0)
-model.update(rf.where("type") == "category", p_mask=0.0, p_prune=0.0)
 model.update(rf.where("type") == "number", p_mask=0.0, p_prune=0.0)
-model.update(rf.where("type") == "boolean", p_mask=0.0, p_prune=0.0)
 model.update(rf.where("type") == "cluster", p_mask=0.5, p_prune=0.3)
 model.optimizer = adamw(2e-5, weight_decay=0.01)
 trainer(logger).fit(model=model, datamodule=datamodule)
