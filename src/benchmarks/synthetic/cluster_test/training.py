@@ -42,7 +42,7 @@ datamodule = StreamingDataModule(
     test=r"./src/benchmarks/synthetic/cluster_test/data/clusters_test.parquet$",
     file_buffer_size=200,
     observation_buffer_size=10_000,
-    num_workers=16,
+    num_workers=12,
     replacement=True,
 )
 
