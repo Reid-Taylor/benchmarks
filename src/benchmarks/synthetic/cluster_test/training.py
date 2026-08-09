@@ -29,7 +29,7 @@ model = rf.Model.from_tree(
     x_field = rf.Number(),
     y_field = rf.Number(),
     # z_field = rf.Number(),
-    id = rf.Cluster(capacity = 115_000, n_clusters=(3,15), ema_decay=0.99, gumbel_tau=0.1, revive_temperature=0.9)
+    id = rf.Cluster(capacity = 115_000, n_clusters=(3,15), ema_decay=0.99, gumbel_tau=0.1, revive_temperature=300)
 )
 
 

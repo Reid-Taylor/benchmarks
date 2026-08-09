@@ -5,7 +5,7 @@ NUM_SAMPLES = 100_000
 NUM_CLUSTERS = 4
 EPSILON = 25
 
-id = np.tile(np.arange(20_000), NUM_SAMPLES // 20_000)
+id = np.tile(np.arange(5000), NUM_SAMPLES // 5000)
 
 relation_y_1 = lambda x: x**2
 relation_y_2 = lambda x: np.log2(x)
