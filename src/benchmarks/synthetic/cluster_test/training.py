@@ -24,7 +24,7 @@ model = rf.Model.from_tree(
     d_model=64,
     n_layers=4,
     n_heads=4,
-    batch_size=512,
+    batch_size=8192,
 
     x_field = rf.Number(),
     y_field = rf.Number(),
