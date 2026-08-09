@@ -2299,7 +2299,7 @@ wheels = [
 [[package]]
 name = "relflow"
 version = "0.1.1"
-source = { git = "https://github.com/relflow/relflow.git?rev=dev%2Fcluster#015093e31e6ac14d9ea00fc0cdf155aa142a618e" }
+source = { git = "https://github.com/relflow/relflow.git?rev=dev%2Fcluster#1b3793cc2d266f340ce1f11add1ca33768638ffa" }
 dependencies = [
     { name = "anytree" },
     { name = "beartype" },
