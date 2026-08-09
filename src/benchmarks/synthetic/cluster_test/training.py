@@ -28,8 +28,8 @@ model = rf.Model.from_tree(
 
     x_field = rf.Number(),
     y_field = rf.Number(),
-    z_field = rf.Number(),
-    id = rf.Cluster(capacity = 150_000, n_clusters=(2,8))
+    # z_field = rf.Number(),
+    id = rf.Cluster(capacity = 115_000, n_clusters=(3,15))
 )
 
 
@@ -56,9 +56,9 @@ def trainer(logger):
         min_epochs=150,
         precision="bf16",
         logger=logger,
-        limit_train_batches=3_500,
-        limit_val_batches=5_000,
-        limit_test_batches=2_500
+        limit_train_batches=350,
+        limit_val_batches=500,
+        limit_test_batches=250
     )
 
 logger = WandbLogger(
@@ -75,8 +75,8 @@ logger = WandbLogger(
 
 # phase: pretrain
 model.update(dropout=0.05)
-model.update(rf.where("type") == "cluster", p_mask=0.15, p_prune=0.05)
-model.update(rf.where("type") == "number", p_mask=0.15, p_prune=0.05)
+model.update(rf.where("type") == "cluster", p_mask=0.25, p_prune=0.05)
+model.update(rf.where("type") == "number", p_mask=0.25, p_prune=0.05)
 model.optimizer = adamw(2e-5, weight_decay=0.01)
 
 trainer(logger).fit(model=model, datamodule=datamodule)
