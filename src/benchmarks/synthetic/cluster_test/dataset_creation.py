@@ -38,6 +38,9 @@ df = pd.DataFrame(
     }
 )
 
+import os 
+print(os.getcwd())
+
 df.iloc[:int(NUM_SAMPLES*0.8),:].to_parquet("./src/benchmarks/synthetic/cluster_test/data/clusters_train.parquet")
 df.iloc[int(NUM_SAMPLES*0.8):int(NUM_SAMPLES*0.9),:].to_parquet("./src/benchmarks/synthetic/cluster_test/data/clusters_val.parquet")
 df.iloc[int(NUM_SAMPLES*0.9):,:].to_parquet("./src/benchmarks/synthetic/cluster_test/data/clusters_test.parquet")
