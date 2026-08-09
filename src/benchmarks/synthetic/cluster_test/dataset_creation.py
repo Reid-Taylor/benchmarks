@@ -5,12 +5,12 @@ NUM_SAMPLES = 100_000
 NUM_CLUSTERS = 4
 EPSILON = 25
 
-id = np.tile(np.arange(10_000), NUM_SAMPLES // 10_000)
+id = np.tile(np.arange(20_000), NUM_SAMPLES // 20_000)
 
 relation_y_1 = lambda x: x**2
 relation_y_2 = lambda x: np.log2(x)
 relation_y_3 = lambda x: np.negative(x)
-relation_y_4 = lambda x: 1.87 * x
+relation_y_4 = lambda x: 1/x
 
 x = np.random.random(NUM_SAMPLES) * 1000
 y = np.where(id % NUM_CLUSTERS == 0, relation_y_1(x),
