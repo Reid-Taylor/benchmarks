@@ -56,9 +56,9 @@ def trainer(logger):
         min_epochs=150,
         precision="bf16",
         logger=logger,
-        limit_train_batches=350,
-        limit_val_batches=500,
-        limit_test_batches=250
+        limit_train_batches=100,
+        limit_val_batches=250,
+        limit_test_batches=1000
     )
 
 logger = WandbLogger(
