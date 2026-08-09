@@ -9,12 +9,12 @@ NUM_CLUSTERS = 4
 id = np.arange(NUM_SAMPLES)
 
 relation_y_1 = lambda x: np.sin(x)
-relation_y_2 = lambda x: np.exp(x)
+relation_y_2 = lambda x: np.log2(x)
 relation_y_3 = lambda x: np.negative(x)
 relation_y_4 = lambda x: x
 
 relation_z_1 = lambda x: np.cos(x)
-relation_z_2 = lambda x: np.log(x)
+relation_z_2 = lambda x: np.log10(x)
 relation_z_3 = lambda x: np.negative(x)
 relation_z_4 = lambda x: 0
 
