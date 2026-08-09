@@ -157,10 +157,10 @@ def build_user_repeat_schema(spec: TaskSpec) -> rf.Model:
 
     return rf.Model(
         name=spec.root_name,
-        d_model=128,
-        n_layers=4,
-        n_heads=4,
-        batch_size=32,
+        d_model=256,
+        n_layers=8,
+        n_heads=8,
+        batch_size=128,
         embed=True,
         optimizer=lambda module: torch.optim.AdamW(
             module.parameters(), lr=1e-3, weight_decay=1e-4
@@ -497,6 +497,7 @@ def main() -> None:
     trainer = lit.Trainer(
         max_epochs=args.max_epochs,
         accelerator="auto",
+        precision="bf16",
         devices="auto",
         callbacks=[checkpoint],
         logger=logger,
