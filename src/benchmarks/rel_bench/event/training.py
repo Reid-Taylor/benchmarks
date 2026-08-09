@@ -47,10 +47,16 @@ import numpy as np
 import polars as pl
 import relflow as rf
 import torch
+import wandb
 from lightning.pytorch.callbacks import ModelCheckpoint
 from lightning.pytorch.loggers import Logger
 
 from .tasks import TASKS, TaskSpec, get_task_spec
+
+# shared Unix account: force wandb to use MY key, never ~/.netrc
+assert os.environ.get("WANDB_API_KEY"), "source ~/reid/wandb.env before running"
+wandb.login(key=os.environ["WANDB_API_KEY"], relogin=True)
+
 
 # Only user-repeat is implemented in this file. The registry contains every
 # rel-event task so the CLI vocabulary and evaluation code stay honest; adding
