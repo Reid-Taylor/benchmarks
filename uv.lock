@@ -231,7 +231,7 @@ requires-dist = [
     { name = "pdbfixer", specifier = ">=1.12.0" },
     { name = "polars", specifier = ">=1.43.2" },
     { name = "relbench", specifier = ">=2.1.2" },
-    { name = "relflow", git = "https://github.com/relflow/relflow.git" },
+    { name = "relflow", git = "https://github.com/relflow/relflow.git?rev=dev%2Fcluster" },
     { name = "requests", specifier = ">=2.34.2" },
     { name = "torch", specifier = ">=2.13.0" },
     { name = "wandb", specifier = ">=0.28.1" },
@@ -2299,7 +2299,7 @@ wheels = [
 [[package]]
 name = "relflow"
 version = "0.1.1"
-source = { git = "https://github.com/relflow/relflow.git#2e8379ca4e66ec2b0163097b7a7d76e1e05e0fa2" }
+source = { git = "https://github.com/relflow/relflow.git?rev=dev%2Fcluster#b88b06b66a96e78c13e279aed44025c76bf6af45" }
 dependencies = [
     { name = "anytree" },
     { name = "beartype" },
