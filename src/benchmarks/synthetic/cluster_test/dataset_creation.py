@@ -1,36 +1,56 @@
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 
+SEED = 42
 NUM_SAMPLES = 100_000
 NUM_CLUSTERS = 5
-EPSILON = 0
+EPSILON = 0.05
+X_LOW, X_HIGH = 0.0, 10.0
 
-id = np.tile(np.arange(5000), NUM_SAMPLES // 5000)
+DATA_DIR = Path(__file__).resolve().parent / "data"
+DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-relation_y_1 = lambda x: x**2
-relation_y_2 = lambda x: np.log2(x)
-relation_y_3 = lambda x: np.negative(x)
-relation_y_4 = lambda x: 1/x
-relation_y_5 = lambda x: np.sin(x)
+rng = np.random.default_rng(SEED)
 
-x = np.random.random(NUM_SAMPLES) * 1000
-y = np.where(id % NUM_CLUSTERS == 0, relation_y_1(x),
-             np.where(id % NUM_CLUSTERS == 1, relation_y_2(x),
-                      np.where(id % NUM_CLUSTERS == 2, relation_y_3(x),
-                            np.where(id % NUM_CLUSTERS == 3, relation_y_4(x),
-                               relation_y_5(x)))))
+# Each cluster is a distinct y = f_k(x) manifold, offset so curves do
+# not intersect in (x, y) space -- K is unambiguous from the geometry.
+relations = [
+    lambda x: np.sin(x) + 10.0,
+    lambda x: np.cos(x) + 4.0,
+    lambda x: np.zeros_like(x) - 2.0,
+    lambda x: 0.5 * x - 8.0,
+    lambda x: -0.3 * x - 14.0,
+]
 
-x = x + np.random.normal(0, EPSILON, NUM_SAMPLES)
-y = y + np.random.normal(0, EPSILON, NUM_SAMPLES)
+cluster = rng.integers(0, NUM_CLUSTERS, size=NUM_SAMPLES)
+x = rng.uniform(X_LOW, X_HIGH, size=NUM_SAMPLES)
+
+y = np.empty(NUM_SAMPLES)
+for k, f in enumerate(relations):
+    mask = cluster == k
+    y[mask] = f(x[mask])
+
+x = x + rng.normal(0.0, EPSILON, NUM_SAMPLES)
+y = y + rng.normal(0.0, EPSILON, NUM_SAMPLES)
 
 df = pd.DataFrame(
     {
-        "id": id,
+        "id": np.arange(NUM_SAMPLES),
         "x": x,
         "y": y,
+        # Ground-truth label; drop before fitting, use for scoring.
+        "cluster": cluster,
     }
 )
 
-df.iloc[:int(NUM_SAMPLES*0.8),:].to_parquet("./src/benchmarks/synthetic/cluster_test/data/clusters_train.parquet")
-df.iloc[int(NUM_SAMPLES*0.8):int(NUM_SAMPLES*0.9),:].to_parquet("./src/benchmarks/synthetic/cluster_test/data/clusters_val.parquet")
-df.iloc[int(NUM_SAMPLES*0.9):,:].to_parquet("./src/benchmarks/synthetic/cluster_test/data/clusters_test.parquet")
+# Shuffle so train/val/test are cluster-balanced.
+df = df.sample(frac=1.0, random_state=SEED).reset_index(drop=True)
+
+n_train = int(NUM_SAMPLES * 0.8)
+n_val = int(NUM_SAMPLES * 0.9)
+
+df.iloc[:n_train, :].to_parquet(DATA_DIR / "clusters_train.parquet")
+df.iloc[n_train:n_val, :].to_parquet(DATA_DIR / "clusters_val.parquet")
+df.iloc[n_val:, :].to_parquet(DATA_DIR / "clusters_test.parquet")
