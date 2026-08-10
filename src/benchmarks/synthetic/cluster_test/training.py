@@ -30,7 +30,7 @@ model = rf.Model.from_tree(
     y_field = rf.Number(),
     # z_field = rf.Number(),
     # id = rf.Cluster(capacity = 115_000, n_clusters=(3,15), ema_decay=0.99)
-    # id = rf.Cluster(capacity = 115_000, n_clusters=(5,5), ema_decay=0.99)
+    id = rf.Cluster(capacity = 115_000, n_clusters=(5,5), ema_decay=0.99)
 )
 
 
