@@ -2,8 +2,8 @@ import numpy as np
 import pandas as pd
 
 NUM_SAMPLES = 100_000
-NUM_CLUSTERS = 4
-EPSILON = 25
+NUM_CLUSTERS = 5
+EPSILON = 0
 
 id = np.tile(np.arange(5000), NUM_SAMPLES // 5000)
 
@@ -11,12 +11,14 @@ relation_y_1 = lambda x: x**2
 relation_y_2 = lambda x: np.log2(x)
 relation_y_3 = lambda x: np.negative(x)
 relation_y_4 = lambda x: 1/x
+relation_y_5 = lambda x: np.sin(x)
 
 x = np.random.random(NUM_SAMPLES) * 1000
 y = np.where(id % NUM_CLUSTERS == 0, relation_y_1(x),
              np.where(id % NUM_CLUSTERS == 1, relation_y_2(x),
                       np.where(id % NUM_CLUSTERS == 2, relation_y_3(x),
-                               relation_y_4(x))))
+                            np.where(id % NUM_CLUSTERS == 3, relation_y_4(x),
+                               relation_y_5(x)))))
 
 x = x + np.random.normal(0, EPSILON, NUM_SAMPLES)
 y = y + np.random.normal(0, EPSILON, NUM_SAMPLES)
