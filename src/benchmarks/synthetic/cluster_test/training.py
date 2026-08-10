@@ -29,7 +29,8 @@ model = rf.Model.from_tree(
     x_field = rf.Number(),
     y_field = rf.Number(),
     # z_field = rf.Number(),
-    id = rf.Cluster(capacity = 115_000, n_clusters=(3,15), ema_decay=0.99, sparsity_weight=0.25)
+    # id = rf.Cluster(capacity = 115_000, n_clusters=(3,15), ema_decay=0.99)
+    # id = rf.Cluster(capacity = 115_000, n_clusters=(5,5), ema_decay=0.99)
 )
 
 
@@ -84,6 +85,7 @@ trainer(logger).fit(model=model, datamodule=datamodule)
 # phase: finetune
 model.update(rf.where("type") == "number", p_mask=0.0, p_prune=0.0)
 model.update(rf.where("type") == "cluster", p_mask=0.5, p_prune=0.3)
+model.update(rf.where("name") == "y_field", p_mask=0.5, p_prune=0.3)
 model.optimizer = adamw(2e-5, weight_decay=0.01)
 trainer(logger).fit(model=model, datamodule=datamodule)
 
